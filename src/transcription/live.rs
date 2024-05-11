@@ -40,6 +40,7 @@ where
     encoding: Option<String>,
     sample_rate: Option<u32>,
     channels: Option<u16>,
+    keep_alive: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -77,6 +78,8 @@ pub enum StreamResponse {
     },
 }
 
+
+
 #[pin_project]
 struct FileChunker {
     chunk_size: usize,
@@ -95,6 +98,7 @@ impl Transcription<'_> {
             encoding: None,
             sample_rate: None,
             channels: None,
+            keep_alive: false,
         }
     }
 }
@@ -168,6 +172,11 @@ where
 
         self
     }
+
+    pub fn keep_alive(mut self) -> Self {
+        self.keep_alive = true;
+        self
+    }
 }
 
 impl<'a> StreamRequestBuilder<'a, Receiver<Result<Bytes>>, DeepgramError> {
@@ -207,6 +216,7 @@ where
             encoding,
             sample_rate,
             channels,
+            keep_alive,
         } = self;
         let mut source = source
             .ok_or(DeepgramError::NoSource)?
@@ -243,15 +253,38 @@ where
 
         let send_task = async move {
             loop {
-                match source.next().await {
-                    None => break,
-                    Some(Ok(frame)) => {
+                if keep_alive {
+                    let res = tokio::select! {
+                        res = source.next() => Some(res),
+                        _ = tokio::time::sleep(Duration::from_secs(8)) => None,
+                    };
+                    if let Some(res) = res {
+                        match res {
+                            None => break,
+                            Some(Ok(frame)) => {
+                                // This unwrap is not safe.
+                                write.send(frame).await.unwrap();
+                            }
+                            Some(e) => {
+                                let _ = dbg!(e);
+                                break;
+                            }
+                        }
+                    } else {
                         // This unwrap is not safe.
-                        write.send(frame).await.unwrap();
+                        write.send(Message::text("{\"type\":\"KeepAlive\"}")).await.unwrap();
                     }
-                    Some(e) => {
-                        let _ = dbg!(e);
-                        break;
+                } else {
+                    match source.next().await {
+                        None => break,
+                        Some(Ok(frame)) => {
+                            // This unwrap is not safe.
+                            write.send(frame).await.unwrap();
+                        }
+                        Some(e) => {
+                            let _ = dbg!(e);
+                            break;
+                        }
                     }
                 }
             }
