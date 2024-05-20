@@ -4,14 +4,13 @@ use std::thread;
 use bytes::{BufMut, Bytes, BytesMut};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
-use crossbeam::channel::RecvError;
 use futures::channel::mpsc::{self, Receiver as FuturesReceiver};
 use futures::stream::StreamExt;
 use futures::SinkExt;
 
 use deepgram::{Deepgram, DeepgramError};
 
-fn microphone_as_stream() -> FuturesReceiver<Result<Bytes, RecvError>> {
+fn microphone_as_stream() -> FuturesReceiver<Bytes> {
     let (sync_tx, sync_rx) = crossbeam::channel::unbounded();
     let (mut async_tx, async_rx) = mpsc::channel(1);
 
@@ -79,8 +78,14 @@ fn microphone_as_stream() -> FuturesReceiver<Result<Bytes, RecvError>> {
 
     tokio::spawn(async move {
         loop {
-            let data = sync_rx.recv();
-            async_tx.send(data).await.unwrap();
+            match sync_rx.recv() {
+                Ok(data) => async_tx.send(data).await.unwrap(),
+                Err(e) => {
+                    let _ = dbg!(e);
+                    break;
+                }
+            }
+            
         }
     });
 
