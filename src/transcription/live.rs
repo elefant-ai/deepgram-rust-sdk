@@ -31,9 +31,9 @@ use crate::{Deepgram, DeepgramError, Result};
 use super::Transcription;
 
 #[derive(Debug)]
-pub struct StreamRequestBuilder<'a, S, E>
+pub struct StreamRequestBuilder<'a, S>
 where
-    S: Stream<Item = std::result::Result<Bytes, E>>,
+    S: Stream<Item = Bytes>,
 {
     config: &'a Deepgram,
     source: Option<S>,
@@ -89,9 +89,9 @@ struct FileChunker {
 }
 
 impl Transcription<'_> {
-    pub fn stream_request<E, S: Stream<Item = std::result::Result<Bytes, E>>>(
+    pub fn stream_request<S: Stream<Item = Bytes>>(
         &self,
-    ) -> StreamRequestBuilder<S, E> {
+    ) -> StreamRequestBuilder<S> {
         StreamRequestBuilder {
             config: self.0,
             source: None,
@@ -145,9 +145,9 @@ impl Stream for FileChunker {
     }
 }
 
-impl<'a, S, E> StreamRequestBuilder<'a, S, E>
+impl<'a, S> StreamRequestBuilder<'a, S>
 where
-    S: Stream<Item = std::result::Result<Bytes, E>>,
+    S: Stream<Item = Bytes>,
 {
     pub fn stream(mut self, stream: S) -> Self {
         self.source = Some(stream);
@@ -179,13 +179,13 @@ where
     }
 }
 
-impl<'a> StreamRequestBuilder<'a, Receiver<Result<Bytes>>, DeepgramError> {
+impl<'a> StreamRequestBuilder<'a, Receiver<Bytes>> {
     pub async fn file(
         mut self,
         filename: impl AsRef<Path>,
         frame_size: usize,
         frame_delay: Duration,
-    ) -> Result<StreamRequestBuilder<'a, Receiver<Result<Bytes>>, DeepgramError>> {
+    ) -> Result<StreamRequestBuilder<'a, Receiver<Bytes>>> {
         let file = File::open(filename).await?;
         let mut chunker = FileChunker::new(file, frame_size);
         let (mut tx, rx) = mpsc::channel(1);
@@ -194,7 +194,13 @@ impl<'a> StreamRequestBuilder<'a, Receiver<Result<Bytes>>, DeepgramError> {
                 tokio::time::sleep(frame_delay).await;
                 // This unwrap() is safe because application logic dictates that the Receiver won't
                 // be dropped before the Sender.
-                tx.send(frame).await.unwrap();
+                match frame {
+                    Ok(frame) => tx.send(frame).await.unwrap(),
+                    Err(e) => {
+                        let _ = dbg!(e);
+                        break;
+                    }
+                }
             }
         };
         tokio::spawn(task);
@@ -204,10 +210,9 @@ impl<'a> StreamRequestBuilder<'a, Receiver<Result<Bytes>>, DeepgramError> {
     }
 }
 
-impl<S, E> StreamRequestBuilder<'_, S, E>
+impl<S> StreamRequestBuilder<'_, S>
 where
-    S: Stream<Item = std::result::Result<Bytes, E>> + Send + Unpin + 'static,
-    E: Send + std::fmt::Debug,
+    S: Stream<Item = Bytes> + Send + Unpin + 'static,
 {
     pub async fn start(self) -> Result<Receiver<Result<StreamResponse>>> {
         let StreamRequestBuilder {
@@ -220,7 +225,7 @@ where
         } = self;
         let mut source = source
             .ok_or(DeepgramError::NoSource)?
-            .map(|res| res.map(|bytes| Message::binary(Vec::from(bytes.as_ref()))));
+            .map(|bytes| Message::binary(Vec::from(bytes.as_ref())));
 
         // This unwrap is safe because we're parsing a static.
         let mut base = Url::parse("wss://api.deepgram.com/v1/listen").unwrap();
@@ -261,13 +266,9 @@ where
                     if let Some(res) = res {
                         match res {
                             None => break,
-                            Some(Ok(frame)) => {
+                            Some(frame) => {
                                 // This unwrap is not safe.
                                 write.send(frame).await.unwrap();
-                            }
-                            Some(e) => {
-                                let _ = dbg!(e);
-                                break;
                             }
                         }
                     } else {
@@ -277,13 +278,9 @@ where
                 } else {
                     match source.next().await {
                         None => break,
-                        Some(Ok(frame)) => {
+                        Some(frame)=> {
                             // This unwrap is not safe.
                             write.send(frame).await.unwrap();
-                        }
-                        Some(e) => {
-                            let _ = dbg!(e);
-                            break;
                         }
                     }
                 }
