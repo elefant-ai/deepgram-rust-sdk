@@ -41,6 +41,8 @@ where
     sample_rate: Option<u32>,
     channels: Option<u16>,
     keep_alive: bool,
+    callback: Option<String>,
+    model: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,8 +80,6 @@ pub enum StreamResponse {
     },
 }
 
-
-
 #[pin_project]
 struct FileChunker {
     chunk_size: usize,
@@ -89,9 +89,7 @@ struct FileChunker {
 }
 
 impl Transcription<'_> {
-    pub fn stream_request<S: Stream<Item = Bytes>>(
-        &self,
-    ) -> StreamRequestBuilder<S> {
+    pub fn stream_request<S: Stream<Item = Bytes>>(&self) -> StreamRequestBuilder<S> {
         StreamRequestBuilder {
             config: self.0,
             source: None,
@@ -99,6 +97,8 @@ impl Transcription<'_> {
             sample_rate: None,
             channels: None,
             keep_alive: false,
+            callback: None,
+            model: None,
         }
     }
 }
@@ -173,8 +173,20 @@ where
         self
     }
 
+    pub fn callback(mut self, callback: String) -> Self {
+        self.callback = Some(callback);
+
+        self
+    }
+
     pub fn keep_alive(mut self) -> Self {
         self.keep_alive = true;
+        self
+    }
+
+    pub fn model(mut self, model: String) -> Self {
+        self.model = Some(model);
+
         self
     }
 }
@@ -222,6 +234,8 @@ where
             sample_rate,
             channels,
             keep_alive,
+            callback,
+            model,
         } = self;
         let mut source = source
             .ok_or(DeepgramError::NoSource)?
@@ -239,6 +253,12 @@ where
             }
             if let Some(channels) = channels {
                 pairs.append_pair("channels", &channels.to_string());
+            }
+            if let Some(callback) = callback {
+                pairs.append_pair("callback", &callback);
+            }
+            if let Some(model) = model {
+                pairs.append_pair("model", &model);
             }
         }
 
@@ -273,12 +293,15 @@ where
                         }
                     } else {
                         // This unwrap is not safe.
-                        write.send(Message::text("{\"type\":\"KeepAlive\"}")).await.unwrap();
+                        write
+                            .send(Message::text("{\"type\":\"KeepAlive\"}"))
+                            .await
+                            .unwrap();
                     }
                 } else {
                     match source.next().await {
                         None => break,
-                        Some(frame)=> {
+                        Some(frame) => {
                             // This unwrap is not safe.
                             write.send(frame).await.unwrap();
                         }
